@@ -87,6 +87,16 @@ jobs:
           go mod tidy
           go mod verify
 
+      - name: Pre-build Go standard library (export data)
+        run: |
+          echo "Pre-building standard library for GOARCH=${{ matrix.goarch }}..."
+          $env:GOARCH = "${{ matrix.goarch }}"
+          $env:CGO_ENABLED = "0"
+          # 安装所有导入的包，预构建 std 导出数据，避免 "bytes without types"
+          go install std
+          go build -v ./...
+          echo "Pre-build done"
+
       - name: Install frontend dependencies
         working-directory: frontend
         run: |
@@ -124,8 +134,15 @@ jobs:
           $goBin = (go env GOPATH) + "\bin"
           $wails = "$goBin\wails.exe"
 
-          echo "Building with GOARCH=${{ matrix.goarch }}"
-          & $wails build -platform windows/${{ matrix.goarch }} -clean -ldflags "-s -w -H windowsgui"
+          $env:GOARCH = "${{ matrix.goarch }}"
+          $env:GOOS = "windows"
+          if ("${{ matrix.goarch }}" -eq "386") {
+            $env:CGO_ENABLED = "0"
+            echo "x86 build: set CGO_ENABLED=0"
+          }
+
+          echo "Building with GOARCH=$env:GOARCH CGO_ENABLED=$env:CGO_ENABLED"
+          & $wails build -platform windows/${{ matrix.goarch }} -clean -ldflags "-s -w -H windowsgui" -obfuscated=false
 
           if (-not (Test-Path "build\bin\PicuiUploader.exe")) {
             Write-Error "构建失败：build\bin\PicuiUploader.exe 未生成"
