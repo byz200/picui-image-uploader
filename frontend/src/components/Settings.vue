@@ -36,7 +36,13 @@ const strategies = ref<T.main.Strategy[]>([])
 async function loadOptions() {
   try {
     const [al, st] = await Promise.all([
-      App.GetAlbums(1, '', 'newest').catch(() => ({ data: [] } as T.main.AlbumList)),
+      App.GetAlbums(1, '', 'newest').catch(() => ({
+        currentPage: 1,
+        lastPage: 1,
+        perPage: 20,
+        total: 0,
+        data: [] as T.main.Album[]
+      } satisfies T.main.AlbumList)),
       App.GetStrategies().catch(() => [] as T.main.Strategy[])
     ])
     albums.value = al.data || []
