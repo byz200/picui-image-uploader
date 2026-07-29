@@ -15,12 +15,12 @@ import (
 type App struct {
 	ctx context.Context
 
-	cfg      *ConfigManager
-	api      *APIClient
-	queue    *UploadQueue
-	tray     *TrayManager
-	hotkey   *HotkeyManager
-	ss       *ScreenshotManager
+	cfg    *ConfigManager
+	api    *APIClient
+	queue  *UploadQueue
+	tray   *TrayManager
+	hotkey *HotkeyManager
+	ss     *ScreenshotManager
 
 	mu       sync.Mutex
 	domReady bool
@@ -278,7 +278,7 @@ func (a *App) StartScreenshot() error {
 // ============================ 历史记录 ============================
 
 func (a *App) GetHistory(page int, pageSize int) (*HistoryPage, error) {
-	return a.cfg.GetHistory(page, pageSize)
+	return a.cfg.GetHistory(page, pageSize), nil
 }
 
 func (a *App) DeleteHistory(id string) error {
@@ -326,7 +326,7 @@ func (a *App) CopyText(text string) error {
 
 func (a *App) OpenURL(url string) error {
 	if a.ctx != nil {
-		return runtime.BrowserOpenURL(a.ctx, url)
+		runtime.BrowserOpenURL(a.ctx, url)
 	}
 	return nil
 }
