@@ -1,0 +1,243 @@
+# Picui 图床上传工具 - GitHub Actions CI/CD
+# 自动构建 windows/amd64 与 windows/386 单文件 exe，并在打 tag 时发布 Release
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag_release:
+        description: '创建正式 Release（需要打 v* tag）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # 发布 Release 需要
+  actions: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.suffix }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            suffix: x64
+          - goarch: 386
+            suffix: x86
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+          check-latest: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package.json
+
+      - name: Add Go bin to PATH
+        run: |
+          $goBin = (go env GOPATH) + "\bin"
+          echo "$goBin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "GOPATH: $(go env GOPATH)"
+          echo "GOBIN added: $goBin"
+
+      - name: Install Wails CLI
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.9.1
+          $goBin = (go env GOPATH) + "\bin"
+          if (Test-Path "$goBin\wails.exe") {
+            echo "Wails CLI installed at $goBin\wails.exe"
+            & "$goBin\wails.exe" version
+          } else {
+            Write-Error "Wails CLI not found after install"
+            exit 1
+          }
+
+      - name: Verify Wails system dependencies
+        run: |
+          $goBin = (go env GOPATH) + "\bin"
+          & "$goBin\wails.exe" doctor || true
+
+      - name: Tidy Go modules
+        run: |
+          go mod tidy
+          go mod verify
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm run build
+
+      - name: Verify frontend build output
+        run: |
+          if (-not (Test-Path "frontend\dist\index.html")) {
+            Write-Error "frontend\dist\index.html 未生成，前端构建失败"
+            exit 1
+          }
+          $size = (Get-ChildItem -Recurse "frontend\dist" | Measure-Object -Property Length -Sum).Sum
+          echo "前端构建产物总大小: $([math]::Round($size/1KB,2)) KB"
+          Get-ChildItem -Recurse "frontend\dist" | Select-Object FullName,Length
+
+      - name: Set environment for x86 (386)
+        if: matrix.goarch == '386'
+        run: |
+          echo "GOARCH=386" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "CGO_ENABLED=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build exe (windows/${{ matrix.goarch }})
+        run: |
+          $goBin = (go env GOPATH) + "\bin"
+          $wails = "$goBin\wails.exe"
+
+          echo "Building with GOARCH=${{ matrix.goarch }}"
+          & $wails build -platform windows/${{ matrix.goarch }} -clean -ldflags "-s -w -H windowsgui"
+
+          if (-not (Test-Path "build\bin\PicuiUploader.exe")) {
+            Write-Error "构建失败：build\bin\PicuiUploader.exe 未生成"
+            exit 1
+          }
+
+          $finalName = "build\bin\PicuiUploader-${{ matrix.suffix }}.exe"
+          Move-Item -Force "build\bin\PicuiUploader.exe" $finalName
+          $len = (Get-Item $finalName).Length
+          echo "产物: $finalName ($([math]::Round($len/1MB,2)) MB)"
+          Get-ChildItem build\bin | Format-Table Name,Length
+
+      - name: Verify executable PE architecture
+        run: |
+          $exe = "build\bin\PicuiUploader-${{ matrix.suffix }}.exe"
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          # PE 签名偏移 0x3C 处，读取 4 字节到 e_lfanew
+          $e_lfanew = [BitConverter]::ToInt32($bytes, 0x3C)
+          # PE 标识后4字节是机器类型
+          $machine = [BitConverter]::ToUInt16($bytes, $e_lfanew + 4)
+          $archMap = @{ 0x8664="AMD64"; 0x014c="I386"; 0xAA64="ARM64" }
+          $arch = $archMap[$machine]
+          echo "PE 架构标识: 0x$($machine.ToString('X4')) ($arch)"
+          if ("${{ matrix.goarch }}" -eq "amd64" -and $arch -ne "AMD64") {
+            Write-Error "期望 AMD64，实际 $arch"
+            exit 1
+          }
+          if ("${{ matrix.goarch }}" -eq "386" -and $arch -ne "I386") {
+            Write-Error "期望 I386，实际 $arch"
+            exit 1
+          }
+          echo "架构校验通过 ✓"
+
+      - name: Generate SHA256 checksum
+        run: |
+          $exe = "build\bin\PicuiUploader-${{ matrix.suffix }}.exe"
+          $sum = (Get-FileHash -Algorithm SHA256 $exe).Hash
+          echo "$sum  PicuiUploader-${{ matrix.suffix }}.exe" | Out-File -Encoding ascii -FilePath "build\bin\PicuiUploader-${{ matrix.suffix }}.sha256"
+          echo "SHA256: $sum"
+          Get-Content "build\bin\PicuiUploader-${{ matrix.suffix }}.sha256"
+
+      - name: Upload exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PicuiUploader-${{ matrix.suffix }}
+          path: build/bin/PicuiUploader-${{ matrix.suffix }}.exe
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PicuiUploader-${{ matrix.suffix }}-checksum
+          path: build/bin/PicuiUploader-${{ matrix.suffix }}.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+  release:
+    name: Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: |
+          ls -lh artifacts/
+          echo "---"
+          cat artifacts/*.sha256 2>/dev/null || true
+
+      - name: Merge checksums
+        run: |
+          cat artifacts/*.sha256 > artifacts/SHA256SUMS
+          echo "Merged SHA256SUMS:"
+          cat artifacts/SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: PicuiUploader ${{ github.ref_name }}
+          body: |
+            ## Picui 图床上传工具 ${{ github.ref_name }}
+
+            ### 下载
+
+            | 文件 | 架构 |
+            |------|------|
+            | `PicuiUploader-x64.exe` | Windows 64 位（amd64 / x86_64） |
+            | `PicuiUploader-x86.exe` | Windows 32 位（386 / x86） |
+            | `SHA256SUMS` | 校验和 |
+
+            ### 校验
+
+            ```powershell
+            Get-FileHash -Algorithm SHA256 PicuiUploader-x64.exe
+            Get-FileHash -Algorithm SHA256 PicuiUploader-x86.exe
+            ```
+
+            与 `SHA256SUMS` 中的值对比即可。
+
+            ### 说明
+
+            - 单文件绿色程序，下载后可直接运行，无需安装
+            - 支持 Windows 10 / Windows 11
+            - 首次启动请选择站点（picui.cn / v2.picui.cn）
+            - 配置文件存储于 `%APPDATA%\PicuiUploader\config.json`
+            - 上传历史按站点独立存储
+          files: |
+            artifacts/*.exe
+            artifacts/SHA256SUMS
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true

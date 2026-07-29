@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "picui",
+  "outputfilename": "PicuiUploader",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "Picui Uploader",
+    "email": ""
+  },
+  "info": {
+    "productName": "Picui 图床上传工具",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright © 2026",
+    "comments": "Picui V2 图床桌面端上传工具"
+  }
+}
