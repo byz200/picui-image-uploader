@@ -62,8 +62,8 @@ jobs:
         run: |
           $goBin = (go env GOPATH) + "\bin"
           echo "$goBin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "GOROOT: $(go env GOROOT)"
           echo "GOPATH: $(go env GOPATH)"
-          echo "GOBIN added: $goBin"
 
       - name: Install Wails CLI
         run: |
@@ -86,16 +86,6 @@ jobs:
         run: |
           go mod tidy
           go mod verify
-
-      - name: Pre-build Go standard library (export data)
-        run: |
-          echo "Pre-building standard library for GOARCH=${{ matrix.goarch }}..."
-          $env:GOARCH = "${{ matrix.goarch }}"
-          $env:CGO_ENABLED = "0"
-          # 安装所有导入的包，预构建 std 导出数据，避免 "bytes without types"
-          go install std
-          go build -v ./...
-          echo "Pre-build done"
 
       - name: Install frontend dependencies
         working-directory: frontend
@@ -121,31 +111,59 @@ jobs:
           }
           $size = (Get-ChildItem -Recurse "frontend\dist" | Measure-Object -Property Length -Sum).Sum
           echo "前端构建产物总大小: $([math]::Round($size/1KB,2)) KB"
-          Get-ChildItem -Recurse "frontend\dist" | Select-Object FullName,Length
 
-      - name: Set environment for x86 (386)
-        if: matrix.goarch == '386'
+      - name: Pre-build std + deps for GOARCH=${{ matrix.goarch }} (force install to fix "bytes without types")
         run: |
-          echo "GOARCH=386" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "CGO_ENABLED=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "Installing std + all imported packages for platform windows/${{ matrix.goarch }}..."
+          $env:GOOS = "windows"
+          $env:GOARCH = "${{ matrix.goarch }}"
+          if ("${{ matrix.goarch }}" -eq "386") {
+            $env:CGO_ENABLED = "0"
+          }
+          echo "GOOS=$env:GOOS GOARCH=$env:GOARCH CGO_ENABLED=$env:CGO_ENABLED"
+          # go install std 预构建标准库
+          go install std
+          # go install ./... 预构建所有导入包
+          go install -v ./... 2>&1 | Select-Object -Last 10
+          echo "Install complete, listing GOROOT/pkg/windows_${{ matrix.goarch }}:"
+          $pkgDir = (go env GOROOT) + "\pkg\windows_${{ matrix.goarch }}"
+          if (Test-Path $pkgDir) {
+            $n = (Get-ChildItem $pkgDir -Filter *.a | Measure-Object).Count
+            echo "Found $n prebuilt .a archives"
+          } else {
+            echo "WARNING: pkg arch dir not found"
+          }
 
       - name: Build exe (windows/${{ matrix.goarch }})
         run: |
           $goBin = (go env GOPATH) + "\bin"
           $wails = "$goBin\wails.exe"
 
-          $env:GOARCH = "${{ matrix.goarch }}"
+          # 确保环境变量匹配
           $env:GOOS = "windows"
+          $env:GOARCH = "${{ matrix.goarch }}"
           if ("${{ matrix.goarch }}" -eq "386") {
             $env:CGO_ENABLED = "0"
-            echo "x86 build: set CGO_ENABLED=0"
+            echo "x86 build: CGO_ENABLED=0"
           }
+          # 强制安装依赖，避免 Wails 子进程构建时 std 导出数据丢失
+          $env:GOFLAGS = "-i"
 
-          echo "Building with GOARCH=$env:GOARCH CGO_ENABLED=$env:CGO_ENABLED"
-          & $wails build -platform windows/${{ matrix.goarch }} -clean -ldflags "-s -w -H windowsgui" -obfuscated=false
+          echo "=== Env ==="
+          echo "GOOS=$env:GOOS GOARCH=$env:GOARCH CGO_ENABLED=$env:CGO_ENABLED GOFLAGS=$env:GOFLAGS"
+          echo "GOCACHE=$(go env GOCACHE)"
+          echo "GOMODCACHE=$(go env GOMODCACHE)"
+          echo ""
+          echo "=== Calling wails build -platform windows/${{ matrix.goarch }} ==="
+          & $wails build -platform windows/${{ matrix.goarch }} -clean -ldflags "-s -w -H windowsgui" 2>&1
+          $wailsExit = $LASTEXITCODE
 
+          echo ""
+          echo "=== Wails exit code: $wailsExit ==="
           if (-not (Test-Path "build\bin\PicuiUploader.exe")) {
-            Write-Error "构建失败：build\bin\PicuiUploader.exe 未生成"
+            Write-Error "构建失败：build\bin\PicuiUploader.exe 未生成 (wails exit=$wailsExit)"
+            # 调试：列出 build 目录结构
+            if (Test-Path "build") { Get-ChildItem -Recurse build | Select-Object FullName,Length -First 20 }
             exit 1
           }
 
@@ -159,9 +177,7 @@ jobs:
         run: |
           $exe = "build\bin\PicuiUploader-${{ matrix.suffix }}.exe"
           $bytes = [System.IO.File]::ReadAllBytes($exe)
-          # PE 签名偏移 0x3C 处，读取 4 字节到 e_lfanew
           $e_lfanew = [BitConverter]::ToInt32($bytes, 0x3C)
-          # PE 标识后4字节是机器类型
           $machine = [BitConverter]::ToUInt16($bytes, $e_lfanew + 4)
           $archMap = @{ 0x8664="AMD64"; 0x014c="I386"; 0xAA64="ARM64" }
           $arch = $archMap[$machine]
