@@ -7,58 +7,101 @@ import (
 	"errors"
 	"syscall"
 	"unsafe"
-
-	"golang.org/x/sys/windows"
 )
 
 const cfDIB uint32 = 8
+const gmemFixed uint32 = 0x0000
 
 var (
-	kernel32           = syscall.NewLazyDLL("kernel32.dll")
-	procGlobalUnlock   = kernel32.NewProc("GlobalUnlock")
+	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+	user32   = syscall.NewLazyDLL("user32.dll")
+
+	procOpenClipboard     = user32.NewProc("OpenClipboard")
+	procCloseClipboard    = user32.NewProc("CloseClipboard")
+	procGetClipboardData  = user32.NewProc("GetClipboardData")
+	procGlobalSize        = kernel32.NewProc("GlobalSize")
+	procGlobalLock        = kernel32.NewProc("GlobalLock")
+	procGlobalUnlock      = kernel32.NewProc("GlobalUnlock")
 )
 
-// globalUnlock 调用 kernel32!GlobalUnlock，兼容不同 x/sys/windows 版本的签名差异。
-func globalUnlock(mem windows.Handle) (bool, error) {
-	r1, _, e := procGlobalUnlock.Call(uintptr(mem))
+// openClipboard 调用 user32!OpenClipboard。
+func openClipboard(hwnd syscall.Handle) error {
+	r1, _, e := procOpenClipboard.Call(uintptr(hwnd))
 	if r1 == 0 {
-		if e != syscall.Errno(0) {
-			return false, e
-		}
+		return e
 	}
-	return true, nil
+	return nil
+}
+
+// closeClipboard 调用 user32!CloseClipboard。
+func closeClipboard() error {
+	r1, _, e := procCloseClipboard.Call()
+	if r1 == 0 {
+		return e
+	}
+	return nil
+}
+
+// getClipboardData 调用 user32!GetClipboardData，返回 HGLOBAL。
+func getClipboardData(format uint32) (syscall.Handle, error) {
+	r1, _, e := procGetClipboardData.Call(uintptr(format))
+	if r1 == 0 {
+		return 0, e
+	}
+	return syscall.Handle(r1), nil
+}
+
+// globalSize 调用 kernel32!GlobalSize。
+func globalSize(h syscall.Handle) (uintptr, error) {
+	r1, _, e := procGlobalSize.Call(uintptr(h))
+	if r1 == 0 {
+		return 0, e
+	}
+	return r1, nil
+}
+
+// globalLock 调用 kernel32!GlobalLock，返回内存指针。
+func globalLock(h syscall.Handle) (unsafe.Pointer, error) {
+	r1, _, e := procGlobalLock.Call(uintptr(h))
+	if r1 == 0 {
+		return nil, e
+	}
+	return unsafe.Pointer(r1), nil
+}
+
+// globalUnlock 调用 kernel32!GlobalUnlock。
+func globalUnlock(h syscall.Handle) error {
+	r1, _, e := procGlobalUnlock.Call(uintptr(h))
+	// GlobalUnlock 返回 0 表示失败，e 会是 GetLastError
+	if r1 == 0 && e != syscall.Errno(0) {
+		return e
+	}
+	return nil
 }
 
 // readClipboardImage 从系统剪贴板读取图片（CF_DIB），并封装为可解码的 BMP 字节。
 func readClipboardImage() ([]byte, string, error) {
-	if err := windows.OpenClipboard(0); err != nil {
-		return nil, "", err
+	if err := openClipboard(0); err != nil {
+		return nil, "", errors.New("打开剪贴板失败")
 	}
-	defer windows.CloseClipboard()
+	defer closeClipboard()
 
-	h, err := windows.GetClipboardData(cfDIB)
+	h, err := getClipboardData(cfDIB)
 	if err != nil || h == 0 {
 		return nil, "", errors.New("剪贴板中没有图片数据")
 	}
-	size, err := windows.GlobalSize(windows.Handle(h))
+	size, err := globalSize(h)
 	if err != nil || size == 0 {
 		return nil, "", errors.New("无法读取剪贴板图片大小")
 	}
-	mem := windows.Handle(h)
-	ptr, err := windows.GlobalLock(mem)
+	ptr, err := globalLock(h)
 	if err != nil {
-		return nil, "", err
+		return nil, "", errors.New("无法锁定剪贴板内存")
 	}
-	defer func() {
-		// GlobalUnlock returns (BOOL stillLocked, error) on newer x/sys/windows.
-		// If x/sys/windows exposes a different signature (error only), we fallback via unsafe lookup below.
-		if _, e := globalUnlock(mem); e != nil {
-			// best effort, ignore on error
-		}
-	}()
+	defer globalUnlock(h)
 
 	dib := make([]byte, size)
-	copy(dib, (*[1 << 30]byte)(unsafe.Pointer(ptr))[:size:size])
+	copy(dib, (*[1 << 30]byte)(ptr)[:size:size])
 
 	bmp, err := dibToBMP(dib)
 	if err != nil {
