@@ -117,36 +117,37 @@ jobs:
           $goBin = (go env GOPATH) + "\bin"
           $rsrc = "$goBin\rsrc.exe"
 
-          # 环境变量
+          # 步骤0: 先安装 rsrc（HOST 原生架构 amd64，不设置 GOARCH=386，避免装到 windows_386 子目录）
+          echo "--- Installing akavel/rsrc (host arch amd64) ---"
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"          # 强制用 amd64 安装（CI Runner 是 64 位）
+          go install github.com/akavel/rsrc@latest
+          if (-not (Test-Path $rsrc)) {
+            Write-Error "rsrc.exe 未安装到 $rsrc"
+            exit 1
+          }
+          echo "rsrc installed: $rsrc (size: $([math]::Round((Get-Item $rsrc).Length/1KB,2)) KB)"
+
+          # 设置目标构建架构（只影响 go install 业务包和 go build）
           $env:GOOS = "windows"
           $env:GOARCH = "${{ matrix.goarch }}"
           if ("${{ matrix.goarch }}" -eq "386") {
             $env:CGO_ENABLED = "0"
-            echo "x86 build: CGO_ENABLED=0"
+            echo "x86 target build: CGO_ENABLED=0"
           }
 
           echo ""
-          echo "=== Build config ==="
+          echo "=== Target build config ==="
           echo "GOOS=$env:GOOS GOARCH=$env:GOARCH CGO_ENABLED=$env:CGO_ENABLED"
           echo "GOROOT=$(go env GOROOT) GOPATH=$(go env GOPATH)"
           echo "GOCACHE=$(go env GOCACHE)"
 
           # 步骤1: 安装标准库与依赖（确保 prebuilt .a 存在）
           echo ""
-          echo "--- go install std + ./... ---"
+          echo "--- go install std + ./... (target windows/${{ matrix.goarch }}) ---"
           go install std
           go install ./...
           echo "Pre-install complete"
-
-          # 步骤2: 安装 rsrc 工具（生成 Windows PE 资源文件 syso：图标 + manifest）
-          echo ""
-          echo "--- Installing akavel/rsrc ---"
-          go install github.com/akavel/rsrc@latest
-          if (-not (Test-Path $rsrc)) {
-            Write-Error "rsrc.exe 未安装到 $rsrc"
-            exit 1
-          }
-          echo "rsrc installed"
 
           # 步骤3: 生成 syso 资源文件（图标 ID=1 + manifest）
           # syso 文件名格式 rsrc_windows_<arch>.syso 会被 go build 自动按架构链接
@@ -194,19 +195,19 @@ jobs:
           $exe = "build\bin\PicuiUploader-${{ matrix.suffix }}.exe"
           $bytes = [System.IO.File]::ReadAllBytes($exe)
           $e_lfanew = [BitConverter]::ToInt32($bytes, 0x3C)
-          $machine = [BitConverter]::ToUInt16($bytes, $e_lfanew + 4)
-          $archMap = @{ 0x8664="AMD64"; 0x014c="I386"; 0xAA64="ARM64" }
-          $arch = $archMap[$machine]
-          echo "PE 架构标识: 0x$($machine.ToString('X4')) ($arch)"
-          if ("${{ matrix.goarch }}" -eq "amd64" -and $arch -ne "AMD64") {
-            Write-Error "期望 AMD64，实际 $arch"
+          $machineValue = [BitConverter]::ToUInt16($bytes, $e_lfanew + 4)
+          $machineHex = $machineValue.ToString("X4")
+          echo "PE machine field: 0x$machineHex"
+
+          # 0x8664 = AMD64 (x64), 0x014C = I386 (x86)
+          $expectedHex = if ("${{ matrix.goarch }}" -eq "amd64") { "8664" } else { "014C" }
+          $expectedArch = if ("${{ matrix.goarch }}" -eq "amd64") { "AMD64" } else { "I386" }
+
+          if ($machineHex -ne $expectedHex) {
+            Write-Error "架构不匹配：期望 0x$expectedHex ($expectedArch)，实际 0x$machineHex"
             exit 1
           }
-          if ("${{ matrix.goarch }}" -eq "386" -and $arch -ne "I386") {
-            Write-Error "期望 I386，实际 $arch"
-            exit 1
-          }
-          echo "架构校验通过 ✓"
+          echo "架构校验通过：$expectedArch (0x$machineHex) ✓"
 
       - name: Generate SHA256 checksum
         run: |
