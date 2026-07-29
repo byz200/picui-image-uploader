@@ -48,7 +48,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-          cache: true
+          cache: false
           check-latest: true
 
       - name: Setup Node.js
@@ -112,47 +112,50 @@ jobs:
           $size = (Get-ChildItem -Recurse "frontend\dist" | Measure-Object -Property Length -Sum).Sum
           echo "前端构建产物总大小: $([math]::Round($size/1KB,2)) KB"
 
-      - name: Pre-build std + deps for GOARCH=${{ matrix.goarch }} (force install to fix "bytes without types")
-        run: |
-          echo "Installing std + all imported packages for platform windows/${{ matrix.goarch }}..."
-          $env:GOOS = "windows"
-          $env:GOARCH = "${{ matrix.goarch }}"
-          if ("${{ matrix.goarch }}" -eq "386") {
-            $env:CGO_ENABLED = "0"
-          }
-          echo "GOOS=$env:GOOS GOARCH=$env:GOARCH CGO_ENABLED=$env:CGO_ENABLED"
-          # go install std 预构建标准库
-          go install std
-          # go install ./... 预构建所有导入包
-          go install -v ./... 2>&1 | Select-Object -Last 10
-          echo "Install complete, listing GOROOT/pkg/windows_${{ matrix.goarch }}:"
-          $pkgDir = (go env GOROOT) + "\pkg\windows_${{ matrix.goarch }}"
-          if (Test-Path $pkgDir) {
-            $n = (Get-ChildItem $pkgDir -Filter *.a | Measure-Object).Count
-            echo "Found $n prebuilt .a archives"
-          } else {
-            echo "WARNING: pkg arch dir not found"
-          }
-
       - name: Build exe (windows/${{ matrix.goarch }})
         run: |
           $goBin = (go env GOPATH) + "\bin"
           $wails = "$goBin\wails.exe"
 
-          # 确保环境变量匹配
+          # 清空所有 Go 编译缓存，避免缓存污染导致 "package bytes without types"
+          echo "=== Cleaning Go build cache ==="
+          go clean -cache -testcache -fuzzcache 2>&1 | Out-Null
+          echo "Cache clean done, fresh GOCACHE: $(go env GOCACHE)"
+
+          # 设置环境变量
           $env:GOOS = "windows"
           $env:GOARCH = "${{ matrix.goarch }}"
           if ("${{ matrix.goarch }}" -eq "386") {
             $env:CGO_ENABLED = "0"
             echo "x86 build: CGO_ENABLED=0"
           }
-          # 强制安装依赖，避免 Wails 子进程构建时 std 导出数据丢失
+          # 强制安装依赖包（含 std + 第三方 + 业务包）
           $env:GOFLAGS = "-i"
 
-          echo "=== Env ==="
+          echo ""
+          echo "=== Pre-install std + all packages GOARCH=$env:GOARCH in same shell ==="
           echo "GOOS=$env:GOOS GOARCH=$env:GOARCH CGO_ENABLED=$env:CGO_ENABLED GOFLAGS=$env:GOFLAGS"
           echo "GOCACHE=$(go env GOCACHE)"
           echo "GOMODCACHE=$(go env GOMODCACHE)"
+
+          # 步骤1: 安装标准库
+          echo "--- go install std ---"
+          go install std
+
+          # 步骤2: 安装所有业务包及其依赖
+          echo "--- go install ./... ---"
+          go install -v ./... 2>&1 | Select-Object -Last 20
+
+          # 验证 GOROOT/pkg 已有对应架构的 .a 归档
+          $pkgDir = (go env GOROOT) + "\pkg\windows_${{ matrix.goarch }}"
+          if (Test-Path $pkgDir) {
+            $n = (Get-ChildItem $pkgDir -Filter *.a | Measure-Object).Count
+            echo "Found $n .a archives in $pkgDir"
+          } else {
+            echo "WARNING: $pkgDir not found"
+          }
+
+          # 步骤3: 立即执行 Wails build（同一步骤，同环境，同 cache）
           echo ""
           echo "=== Calling wails build -platform windows/${{ matrix.goarch }} ==="
           & $wails build -platform windows/${{ matrix.goarch }} -clean -ldflags "-s -w -H windowsgui" 2>&1
@@ -162,7 +165,6 @@ jobs:
           echo "=== Wails exit code: $wailsExit ==="
           if (-not (Test-Path "build\bin\PicuiUploader.exe")) {
             Write-Error "构建失败：build\bin\PicuiUploader.exe 未生成 (wails exit=$wailsExit)"
-            # 调试：列出 build 目录结构
             if (Test-Path "build") { Get-ChildItem -Recurse build | Select-Object FullName,Length -First 20 }
             exit 1
           }
