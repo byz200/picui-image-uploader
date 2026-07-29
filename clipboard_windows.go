@@ -5,12 +5,29 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
 const cfDIB uint32 = 8
+
+var (
+	kernel32           = syscall.NewLazyDLL("kernel32.dll")
+	procGlobalUnlock   = kernel32.NewProc("GlobalUnlock")
+)
+
+// globalUnlock 调用 kernel32!GlobalUnlock，兼容不同 x/sys/windows 版本的签名差异。
+func globalUnlock(mem windows.Handle) (bool, error) {
+	r1, _, e := procGlobalUnlock.Call(uintptr(mem))
+	if r1 == 0 {
+		if e != syscall.Errno(0) {
+			return false, e
+		}
+	}
+	return true, nil
+}
 
 // readClipboardImage 从系统剪贴板读取图片（CF_DIB），并封装为可解码的 BMP 字节。
 func readClipboardImage() ([]byte, string, error) {
@@ -27,11 +44,18 @@ func readClipboardImage() ([]byte, string, error) {
 	if err != nil || size == 0 {
 		return nil, "", errors.New("无法读取剪贴板图片大小")
 	}
-	ptr, err := windows.GlobalLock(windows.Handle(h))
+	mem := windows.Handle(h)
+	ptr, err := windows.GlobalLock(mem)
 	if err != nil {
 		return nil, "", err
 	}
-	defer windows.GlobalUnlock(windows.Handle(h))
+	defer func() {
+		// GlobalUnlock returns (BOOL stillLocked, error) on newer x/sys/windows.
+		// If x/sys/windows exposes a different signature (error only), we fallback via unsafe lookup below.
+		if _, e := globalUnlock(mem); e != nil {
+			// best effort, ignore on error
+		}
+	}()
 
 	dib := make([]byte, size)
 	copy(dib, (*[1 << 30]byte)(unsafe.Pointer(ptr))[:size:size])

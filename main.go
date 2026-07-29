@@ -20,16 +20,15 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:             "Picui 图床上传工具",
-		Width:             1120,
-		Height:            740,
-		MinWidth:          900,
-		MinHeight:         600,
-		DisableResize:     false,
-		Fullscreen:        false,
-		WindowStartState:  options.Normal,
-		HideWindowOnStart: false,
-		BackgroundColour:  &options.RGBA{R: 255, G: 255, B: 255, A: 255},
+		Title:            "Picui 图床上传工具",
+		Width:            1120,
+		Height:           740,
+		MinWidth:         900,
+		MinHeight:        600,
+		DisableResize:    false,
+		Fullscreen:       false,
+		WindowStartState: options.Normal,
+		BackgroundColour: &options.RGBA{R: 255, G: 255, B: 255, A: 255},
 		Assets:            assets,
 		DragAndDrop: &options.DragAndDrop{
 			EnableFileDrop:     true,

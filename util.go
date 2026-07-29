@@ -90,7 +90,7 @@ func nowMilli() int64 {
 
 // decodeImage 通用图片解码（含 webp/bmp/tiff）。
 func decodeImage(b []byte) (image.Image, string, error) {
-	cfg, fmtName, err := image.DecodeConfig(bytes.NewReader(b))
+	_, fmtName, err := image.DecodeConfig(bytes.NewReader(b))
 	if err == nil {
 		img, _, err2 := image.Decode(bytes.NewReader(b))
 		if err2 != nil {
