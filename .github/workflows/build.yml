@@ -131,6 +131,9 @@ jobs:
           }
           # 强制安装依赖包（含 std + 第三方 + 业务包）
           $env:GOFLAGS = "-i"
+          # 修复 Go 1.22+ "package bytes without types" 内部错误
+          # 该错误源于 Go 新 coverageredesign 实验与 Wails 子进程构建冲突
+          $env:GOEXPERIMENT = "nocoverageredesign"
 
           echo ""
           echo "=== Pre-install std + all packages GOARCH=$env:GOARCH in same shell ==="
