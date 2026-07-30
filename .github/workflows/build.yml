@@ -171,9 +171,10 @@ jobs:
           $out = "build\bin\PicuiUploader-${{ matrix.suffix }}.exe"
 
           $ldflags = "-s -w -H windowsgui"
-          echo "go build -trimpath -ldflags `"$ldflags`" -o $out"
+          $tags = "wails"
+          echo "go build -trimpath -tags `"$tags`" -ldflags `"$ldflags`" -o $out"
 
-          go build -trimpath -ldflags $ldflags -o $out .
+          go build -trimpath -tags $tags -ldflags $ldflags -o $out .
           $buildExit = $LASTEXITCODE
 
           # 构建完成后清理 syso（避免下次污染）
