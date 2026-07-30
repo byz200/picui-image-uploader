@@ -36,7 +36,7 @@ func NewAPIClient(_ *ConfigManager) *APIClient {
 }
 
 func (c *APIClient) SetBaseURL(u string) { c.baseURL = strings.TrimRight(u, "/") }
-func (c *APIClient) SetToken(t string)    { c.token = t }
+func (c *APIClient) SetToken(t string)   { c.token = t }
 
 // UploadParams 上传参数。
 type UploadParams struct {
@@ -178,8 +178,8 @@ func (c *APIClient) TestToken(token string) (*Profile, error) {
 		AlbumNum:     rp.AlbumNum,
 		RegisteredIP: rp.RegisteredIP,
 		URL:          rp.URL,
-		Capacity:     rp.Capacity,
-		Size:         rp.Size,
+		Capacity:     int64(rp.Capacity),
+		Size:         float64(rp.Size),
 	}, nil
 }
 
@@ -390,7 +390,7 @@ func (c *APIClient) GetImages(page int, q string, order string, permission strin
 			Pathname:  im.Pathname,
 			Mimetype:  im.Mimetype,
 			Extension: im.Extension,
-			Size:      im.Size,
+			Size:      float64(im.Size),
 			Width:     im.Width,
 			Height:    im.Height,
 			HumanDate: im.HumanDate,
@@ -511,16 +511,16 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 // ============================ 原始结构 ============================
 
 type rawProfile struct {
-	Avatar       string  `json:"avatar"`
-	Name         string  `json:"name"`
-	Username     string  `json:"username"`
-	Email        string  `json:"email"`
-	ImageNum     int     `json:"image_num"`
-	AlbumNum     int     `json:"album_num"`
-	RegisteredIP string  `json:"registered_ip"`
-	URL          string  `json:"url"`
-	Capacity     int64   `json:"capacity"`
-	Size         float64 `json:"size"`
+	Avatar       string      `json:"avatar"`
+	Name         string      `json:"name"`
+	Username     string      `json:"username"`
+	Email        string      `json:"email"`
+	ImageNum     int         `json:"image_num"`
+	AlbumNum     int         `json:"album_num"`
+	RegisteredIP string      `json:"registered_ip"`
+	URL          string      `json:"url"`
+	Capacity     FlexInt64   `json:"capacity"`
+	Size         FlexFloat64 `json:"size"`
 }
 
 type rawAlbum struct {
@@ -549,28 +549,28 @@ type rawLinks struct {
 }
 
 type rawUploadData struct {
-	Key        int      `json:"key"`
-	Name       string   `json:"name"`
-	Pathname   string   `json:"pathname"`
-	OriginName string   `json:"origin_name"`
-	Size       float64  `json:"size"`
-	Mimetype   string   `json:"mimetype"`
-	Extension  string   `json:"extension"`
-	Links      rawLinks `json:"links"`
+	Key        int         `json:"key"`
+	Name       string      `json:"name"`
+	Pathname   string      `json:"pathname"`
+	OriginName string      `json:"origin_name"`
+	Size       FlexFloat64 `json:"size"`
+	Mimetype   string      `json:"mimetype"`
+	Extension  string      `json:"extension"`
+	Links      rawLinks    `json:"links"`
 }
 
 type rawImage struct {
-	Key       int      `json:"key"`
-	Name      string   `json:"name"`
-	Pathname  string   `json:"pathname"`
-	Mimetype  string   `json:"mimetype"`
-	Extension string   `json:"extension"`
-	Size      float64  `json:"size"`
-	Width     int      `json:"width"`
-	Height    int      `json:"height"`
-	HumanDate string   `json:"human_date"`
-	Date      string   `json:"date"`
-	Links     rawLinks `json:"links"`
+	Key       int         `json:"key"`
+	Name      string      `json:"name"`
+	Pathname  string      `json:"pathname"`
+	Mimetype  string      `json:"mimetype"`
+	Extension string      `json:"extension"`
+	Size      FlexFloat64 `json:"size"`
+	Width     int         `json:"width"`
+	Height    int         `json:"height"`
+	HumanDate string      `json:"human_date"`
+	Date      string      `json:"date"`
+	Links     rawLinks    `json:"links"`
 }
 
 type rawImageList struct {
@@ -604,4 +604,56 @@ func boolStr(b bool) string {
 		return "1"
 	}
 	return "0"
+}
+
+// ============================ 灵活数值类型 ============================
+
+// FlexFloat64 可从 JSON 字符串或数字解析为 float64。
+// 部分后端（如 Laravel）会将大数值/浮点数以字符串形式返回。
+type FlexFloat64 float64
+
+func (f *FlexFloat64) UnmarshalJSON(data []byte) error {
+	var num float64
+	if err := json.Unmarshal(data, &num); err == nil {
+		*f = FlexFloat64(num)
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	num, err := strconv.ParseFloat(strings.TrimSpace(str), 64)
+	if err != nil {
+		return fmt.Errorf("FlexFloat64: cannot parse %q: %w", str, err)
+	}
+	*f = FlexFloat64(num)
+	return nil
+}
+
+// FlexInt64 可从 JSON 字符串或数字解析为 int64。
+type FlexInt64 int64
+
+func (f *FlexInt64) UnmarshalJSON(data []byte) error {
+	var num int64
+	if err := json.Unmarshal(data, &num); err == nil {
+		*f = FlexInt64(num)
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	str = strings.TrimSpace(str)
+	num, err := strconv.ParseInt(str, 10, 64)
+	if err != nil {
+		// 尝试解析浮点数字符串后取整
+		f64, err2 := strconv.ParseFloat(str, 64)
+		if err2 == nil {
+			*f = FlexInt64(int64(f64))
+			return nil
+		}
+		return fmt.Errorf("FlexInt64: cannot parse %q: %w", str, err)
+	}
+	*f = FlexInt64(num)
+	return nil
 }
