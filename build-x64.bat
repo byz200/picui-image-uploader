@@ -60,7 +60,7 @@ set GOARCH=amd64
 set CGO_ENABLED=0
 if not exist build\bin mkdir build\bin
 go mod tidy
-go build -tags wails -ldflags "-s -w -H windowsgui" -o "build\bin\PicuiUploader-x64.exe" .
+go build -tags desktop,production -ldflags "-s -w -H windowsgui" -o "build\bin\PicuiUploader-x64.exe" .
 if %errorlevel%==0 (
     echo.
     echo [成功] 输出文件: build\bin\PicuiUploader-x64.exe

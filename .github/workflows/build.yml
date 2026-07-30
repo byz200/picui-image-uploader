@@ -171,7 +171,7 @@ jobs:
           $out = "build\bin\PicuiUploader-${{ matrix.suffix }}.exe"
 
           $ldflags = "-s -w -H windowsgui"
-          $tags = "wails"
+          $tags = "desktop,production"
           echo "go build -trimpath -tags `"$tags`" -ldflags `"$ldflags`" -o $out"
 
           go build -trimpath -tags $tags -ldflags $ldflags -o $out .
